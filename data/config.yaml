@@ -1,0 +1,22 @@
+dashboard:
+  refresh_interval: 5
+  log_level: info
+  enable_alerts: true
+  
+modules:
+  cpu:
+    warning_threshold: 70
+    critical_threshold: 90
+  memory:
+    warning_threshold: 80
+  disk:
+    warning_threshold: 85
+    
+security:
+  check_firewall: true
+  check_updates: true
+  monitor_logins: true
+  
+ui:
+  color_scheme: "dark"
+  show_top_processes: 5
