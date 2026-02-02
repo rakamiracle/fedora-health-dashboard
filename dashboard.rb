@@ -1,4 +1,3 @@
-# dashboard.rb
 require 'colorize'
 require 'terminal-table'
 require 'yaml'
@@ -6,6 +5,7 @@ require_relative 'lib/modules/cpu_monitor'
 require_relative 'lib/modules/memory_monitor'
 require_relative 'lib/modules/disk_monitor'
 require_relative 'lib/modules/security_checker'
+require_relative 'lib/modules/network_monitor'
 
 module FedoraDashboard
   class Dashboard
@@ -15,6 +15,7 @@ module FedoraDashboard
       @memory = MemoryMonitor.new
       @disk = DiskMonitor.new
       @security = SecurityChecker.new
+      @network = NetworkMonitor.new
       @alerts = []
     end
     
@@ -33,8 +34,13 @@ module FedoraDashboard
         t.title = "🔄 CPU STATUS"
         t.headings = ['Cores', 'Load (1/5/15)', 'Usage %', 'Status', 'Recommendations']
         
-        status = data[:usage_percentage] > 90 ? "CRITICAL".red : 
-                 data[:usage_percentage] > 70 ? "WARNING".yellow : "NORMAL".green
+        status = if data[:usage_percentage] > 90
+                   "CRITICAL".red
+                 elsif data[:usage_percentage] > 70
+                   "WARNING".yellow
+                 else
+                   "NORMAL".green
+                 end
         
         t.add_row [
           data[:cores],
@@ -46,7 +52,7 @@ module FedoraDashboard
         
         # Top processes
         t.add_separator
-        t.add_row [{value: "TOP PROCESSES:", colspan: 5}]
+        t.add_row [{ value: "TOP PROCESSES:", colspan: 5 }]
         
         @cpu.top_processes(3).each do |process|
           t.add_row [
@@ -63,10 +69,74 @@ module FedoraDashboard
       puts
     end
     
+    def display_memory_table(data)
+      table = Terminal::Table.new do |t|
+        t.title = "🧠 MEMORY STATUS"
+        t.headings = ['Total', 'Used', 'Free', 'Usage %', 'Status']
+        
+        status = if data[:usage_percentage] > 90
+                   "CRITICAL".red
+                 elsif data[:usage_percentage] > 80
+                   "WARNING".yellow
+                 else
+                   "NORMAL".green
+                 end
+        
+        t.add_row [
+          "#{data[:total_gb]} GB",
+          "#{data[:used_gb]} GB",
+          "#{data[:free_gb]} GB",
+          "#{data[:usage_percentage]}%",
+          status
+        ]
+      end
+      
+      puts table
+      puts
+    end
+    
+    def display_network_table(data)
+      return if data[:interfaces].empty?
+      
+      table = Terminal::Table.new do |t|
+        t.title = "🌐 NETWORK STATUS"
+        t.headings = ['Interface', 'State', 'IP Address', 'Bandwidth', 'Connections']
+        
+        data[:interfaces].each do |iface|
+          bandwidth = data[:bandwidth][iface[:name]]
+          bw_str = bandwidth ? "#{bandwidth[:download_mbps]}↓/#{bandwidth[:upload_mbps]}↑ Mbps" : "N/A"
+          
+          t.add_row [
+            iface[:name],
+            iface[:state] == 'up' ? '✅ Up'.green : '❌ Down'.red,
+            iface[:ipv4],
+            bw_str,
+            data[:connections][:total]
+          ]
+        end
+        
+        # Add summary row
+        t.add_separator
+        t.add_row [
+          { value: "SUMMARY:", colspan: 5 }
+        ]
+        t.add_row [
+          "Firewall:",
+          data[:firewall_status][:protected] ? '✅ Active'.green : '❌ Inactive'.red,
+          "DNS:",
+          data[:dns_status][:resolvable] ? '✅ OK'.green : '❌ Failed'.red,
+          "Connections: #{data[:connections][:total]}"
+        ]
+      end
+      
+      puts table
+      puts
+    end
+    
     def display_security_table(data)
       table = Terminal::Table.new do |t|
         t.title = "🔒 SECURITY CHECK"
-        t.headings = ['Component', 'Status', 'Details', 'Actions']
+        t.headings = %w[Component Status Details Actions]
         
         # Firewall
         fw = data[:firewall][:firewalld]
@@ -90,9 +160,9 @@ module FedoraDashboard
         
         # Recommendations
         t.add_separator
-        t.add_row [{value: "RECOMMENDATIONS:", colspan: 4}]
+        t.add_row [{ value: "RECOMMENDATIONS:", colspan: 4 }]
         data[:recommendations].each do |rec|
-          t.add_row [{value: "• #{rec}", colspan: 4}]
+          t.add_row [{ value: "• #{rec}", colspan: 4 }]
         end
       end
       
@@ -102,12 +172,15 @@ module FedoraDashboard
     
     def display_quick_actions
       actions = [
-        {key: '1', action: '🔍 Detail CPU', command: 'htop'},
-        {key: '2', action: '📊 Detail Memory', command: 'free -h'},
-        {key: '3', action: '💾 Detail Disk', command: 'df -h'},
-        {key: '4', action: '🔐 Check Security', command: 'sudo journalctl -xe'},
-        {key: 'r', action: '🔄 Refresh', command: ''},
-        {key: 'q', action: '🚪 Quit', command: ''}
+        { key: '1', action: '🔍 Detail CPU', command: 'htop' },
+        { key: '2', action: '📊 Detail Memory', command: 'free -h' },
+        { key: '3', action: '💾 Detail Disk', command: 'df -h' },
+        { key: '4', action: '🔐 Check Security', command: 'sudo journalctl -xe' },
+        { key: '5', action: '🌐 Network Details', command: '' },
+        { key: '6', action: '📡 Bandwidth Test', command: '' },
+        { key: '7', action: '📊 Export Report', command: '' },
+        { key: 'r', action: '🔄 Refresh', command: '' },
+        { key: 'q', action: '🚪 Quit', command: '' }
       ]
       
       puts "⚡ QUICK ACTIONS:"
@@ -128,16 +201,70 @@ module FedoraDashboard
       end
     end
     
+    def export_full_report
+      timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
+      filename = "reports/system_report_#{timestamp}.txt"
+      
+      FileUtils.mkdir_p('reports')
+      
+      File.open(filename, 'w') do |f|
+        f.puts "Fedora System Health Report"
+        f.puts "Generated: #{Time.now}"
+        f.puts "=" * 60
+        
+        # CPU Data
+        cpu_data = @cpu.analyze
+        f.puts "\nCPU STATUS:"
+        f.puts "  Cores: #{cpu_data[:cores]}"
+        f.puts "  Load Avg: #{cpu_data[:load_1min]}/#{cpu_data[:load_5min]}/#{cpu_data[:load_15min]}"
+        f.puts "  Usage: #{cpu_data[:usage_percentage]}%"
+        f.puts "  Recommendations:"
+        cpu_data[:recommendations].each { |r| f.puts "    • #{r}" }
+        
+        # Memory Data
+        memory_data = @memory.analyze
+        f.puts "\nMEMORY STATUS:"
+        f.puts "  Total: #{memory_data[:total_gb]} GB"
+        f.puts "  Used: #{memory_data[:used_gb]} GB"
+        f.puts "  Usage: #{memory_data[:usage_percentage]}%"
+        
+        # Network Data
+        network_data = @network.analyze
+        f.puts "\nNETWORK STATUS:"
+        f.puts "  Interfaces: #{network_data[:interfaces].size}"
+        network_data[:interfaces].each do |iface|
+          f.puts "    #{iface[:name]}: #{iface[:state]} - #{iface[:ipv4]}"
+        end
+        f.puts "  Active Connections: #{network_data[:connections][:total]}"
+        
+        # Security Data
+        security_data = @security.generate_report
+        f.puts "\nSECURITY STATUS:"
+        f.puts "  Firewall: #{security_data[:firewall][:firewalld][:running] ? 'Active' : 'Inactive'}"
+        f.puts "  Security Updates: #{security_data[:updates][:security_updates]}"
+        
+        f.puts "\n" + "=" * 60
+        f.puts "Report saved to: #{filename}"
+      end
+      
+      puts "✅ Full report exported to: #{filename}"
+    end
+    
     def run
       loop do
         display_header
         
         # Collect data
         cpu_data = @cpu.analyze
+        memory_data = @memory.analyze
+        disk_data = @disk.analyze
         security_data = @security.generate_report
+        network_data = @network.analyze
         
         # Display tables
         display_cpu_table(cpu_data)
+        display_memory_table(memory_data)
+        display_network_table(network_data)
         display_security_table(security_data)
         
         display_quick_actions
@@ -155,6 +282,47 @@ module FedoraDashboard
           system('df -h && echo "---" && sudo du -sh /* 2>/dev/null | sort -hr | head -10')
         when '4'
           system('sudo tail -20 /var/log/secure')
+          puts "Tekan enter untuk lanjut..."
+          gets
+        when '5'
+          puts "🌐 Network Details:"
+          puts "=" * 50
+          network_data[:interfaces].each do |iface|
+            puts "  #{iface[:name]}:"
+            puts "    State: #{iface[:state]}"
+            puts "    MAC: #{iface[:mac]}"
+            puts "    IPv4: #{iface[:ipv4]}"
+            puts "    IPv6: #{iface[:ipv6]}"
+          end
+          puts "\n📊 Bandwidth Usage:"
+          network_data[:bandwidth].each do |interface, bw|
+            puts "  #{interface}: #{bw[:download_mbps]} Mbps ↓ / #{bw[:upload_mbps]} Mbps ↑"
+          end
+          puts "\n🔗 Top Connections:"
+          network_data[:top_connections].each do |conn|
+            puts "  #{conn[:local]} -> #{conn[:remote]} (#{conn[:state]})"
+          end
+          puts "\nTekan enter untuk lanjut..."
+          gets
+        when '6'
+          puts "📡 Bandwidth Test (2 seconds)..."
+          result = @network.realtime_bandwidth('eth0', 2)
+          if result
+            puts "  Download: #{result[:download_mbps]} Mbps"
+            puts "  Upload: #{result[:upload_mbps]} Mbps"
+          else
+            result = @network.realtime_bandwidth('wlan0', 2)
+            if result
+              puts "  Download: #{result[:download_mbps]} Mbps"
+              puts "  Upload: #{result[:upload_mbps]} Mbps"
+            else
+              puts "  Could not measure bandwidth"
+            end
+          end
+          puts "Tekan enter untuk lanjut..."
+          gets
+        when '7'
+          export_full_report
           puts "Tekan enter untuk lanjut..."
           gets
         when 'q'

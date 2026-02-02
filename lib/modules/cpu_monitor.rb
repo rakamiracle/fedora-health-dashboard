@@ -16,7 +16,8 @@ module FedoraDashboard
         load_15min: @load_avg[2],
         usage_percentage: usage,
         recommendations: generate_recommendations(usage),
-        status: get_status(usage)
+        status: get_status(usage),
+        temperature: read_cpu_temperature
       }
     end
     
@@ -48,20 +49,26 @@ module FedoraDashboard
       recs = []
       
       if usage > 90
-        recs << "⚠️  CPU overload! Cek process dengan: `ps aux --sort=-%cpu | head -10`"
-        recs << "📉 Matikan service tidak penting: `sudo systemctl list-units --state=running`"
+        recs << "⚠️  CPU overload! Check processes: `ps aux --sort=-%cpu | head -10`"
+        recs << "📉 Stop unnecessary services: `sudo systemctl list-units --state=running`"
       elsif usage > 70
-        recs << "📊 CPU usage tinggi (#{usage}%). Monitor dengan: `htop`"
+        recs << "📊 CPU usage high (#{usage}%). Monitor with: `htop`"
       else
         recs << "✅ CPU usage normal (#{usage}%)"
       end
       
       if @cores > 4 && usage > 50
-        recs << "🎯 Gunakan `taskset` untuk pin process ke core tertentu"
+        recs << "🎯 Use `taskset` to pin processes to specific cores"
       end
       
       if @load_avg[0] > @cores * 1.5
-        recs << "🚨 Load average tinggi! #{@load_avg[0]} > #{@cores * 1.5} (1.5 x cores)"
+        recs << "🚨 High load average! #{@load_avg[0]} > #{@cores * 1.5} (1.5 x cores)"
+      end
+      
+      # Check temperature
+      temp = read_cpu_temperature
+      if temp[:celsius] && temp[:celsius] > 80
+        recs << "🌡️  High CPU temperature: #{temp[:celsius]}°C"
       end
       
       recs
@@ -98,6 +105,17 @@ module FedoraDashboard
           }
         ]
       end
+    end
+    
+    def get_detailed_stats
+      {
+        cores: @cores,
+        load_avg: @load_avg,
+        load_per_core: @load_avg.map { |load| (load / @cores.to_f).round(3) },
+        cpu_info: read_cpu_info,
+        frequency: read_cpu_frequency,
+        temperature: read_cpu_temperature
+      }
     end
     
     private
@@ -144,6 +162,61 @@ module FedoraDashboard
         softirq: stats[6],
         total: stats.sum
       }
+    end
+    
+    def read_cpu_info
+      begin
+        info = {}
+        File.read('/proc/cpuinfo').lines.each do |line|
+          if line.include?(':')
+            key, value = line.split(':', 2)
+            key = key.strip.downcase.gsub(/\s+/, '_')
+            info[key] = value.strip unless value.nil?
+          end
+        end
+        info
+      rescue
+        { model_name: 'Unknown', cpu_cores: @cores }
+      end
+    end
+    
+    def read_cpu_frequency
+      begin
+        current = File.read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq').to_i / 1000
+        max = File.read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq').to_i / 1000
+        min = File.read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq').to_i / 1000
+        
+        {
+          current_mhz: current,
+          max_mhz: max,
+          min_mhz: min,
+          percentage: (current.to_f / max * 100).round(2)
+        }
+      rescue
+        { current_mhz: 0, max_mhz: 0, min_mhz: 0, percentage: 0 }
+      end
+    end
+    
+    def read_cpu_temperature
+      sensors = [
+        '/sys/class/thermal/thermal_zone0/temp',
+        '/sys/class/hwmon/hwmon0/temp1_input',
+        '/sys/class/hwmon/hwmon1/temp1_input'
+      ]
+      
+      sensors.each do |sensor|
+        begin
+          if File.exist?(sensor)
+            temp = File.read(sensor).to_i
+            temp = temp > 1000 ? temp / 1000.0 : temp
+            return { celsius: temp.round(1), fahrenheit: (temp * 9/5 + 32).round(1) }
+          end
+        rescue
+          next
+        end
+      end
+      
+      { celsius: nil, fahrenheit: nil }
     end
     
     def get_status(usage)

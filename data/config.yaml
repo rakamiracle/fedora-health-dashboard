@@ -1,4 +1,4 @@
-dashboard:
+  dashboard:
   refresh_interval: 5
   log_level: info
   enable_alerts: true

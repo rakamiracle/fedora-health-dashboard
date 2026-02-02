@@ -1,10 +1,11 @@
 require_relative 'dashboard'
 
 begin
-  puts "🚀 Starting Fedora System Health Dashboard..."
-  puts "📊 Monitoring system resources setiap 5 detik"
-  puts "📝 Logs disimpan di: logs/system.log"
-  puts "-" * 50
+  puts '🚀 Starting Fedora System Health Dashboard...'
+  puts '📊 Monitoring system resources setiap 5 detik'
+  puts '📝 Logs disimpan di: logs/system.log'
+  puts '🌐 Network monitoring aktif'
+  puts '-' * 50
   
   dashboard = FedoraDashboard::Dashboard.new(5)
   dashboard.run
