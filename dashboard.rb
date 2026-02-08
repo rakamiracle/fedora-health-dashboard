@@ -6,6 +6,7 @@ require_relative 'lib/modules/memory_monitor'
 require_relative 'lib/modules/disk_monitor'
 require_relative 'lib/modules/security_checker'
 require_relative 'lib/modules/network_monitor'
+require_relative 'lib/modules/service_monitor'
 
 module FedoraDashboard
   class Dashboard
@@ -16,6 +17,7 @@ module FedoraDashboard
       @disk = DiskMonitor.new
       @security = SecurityChecker.new
       @network = NetworkMonitor.new
+      @services = ServiceMonitor.new
       @alerts = []
     end
     
@@ -95,6 +97,35 @@ module FedoraDashboard
       puts
     end
     
+    def display_disk_table(data)
+      table = Terminal::Table.new do |t|
+        t.title = "💾 DISK STATUS"
+        t.headings = ['Mount', 'Total', 'Used', 'Free', 'Usage %', 'Status']
+        
+        data[:partitions].first(3).each do |partition|
+          status = if partition[:usage_percentage] > 95
+                     "CRITICAL".red
+                   elsif partition[:usage_percentage] > 85
+                     "WARNING".yellow
+                   else
+                     "NORMAL".green
+                   end
+          
+          t.add_row [
+            partition[:mount],
+            "#{partition[:total_gb]} GB",
+            "#{partition[:used_gb]} GB",
+            "#{partition[:free_gb]} GB",
+            "#{partition[:usage_percentage]}%",
+            status
+          ]
+        end
+      end
+      
+      puts table
+      puts
+    end
+    
     def display_network_table(data)
       return if data[:interfaces].empty?
       
@@ -127,6 +158,47 @@ module FedoraDashboard
           data[:dns_status][:resolvable] ? '✅ OK'.green : '❌ Failed'.red,
           "Connections: #{data[:connections][:total]}"
         ]
+      end
+      
+      puts table
+      puts
+    end
+    
+    def display_service_table(data)
+      table = Terminal::Table.new do |t|
+        t.title = "🛠️  SERVICE STATUS"
+        t.headings = ['Service', 'Status', 'Enabled', 'Memory', 'Uptime']
+        
+        # Show critical services
+        data[:critical_services].each do |service|
+          next unless service[:exists]
+          
+          status = service[:active] ? '✅ Active'.green : '❌ Inactive'.red
+          enabled = service[:enabled] ? 'Yes'.green : 'No'.yellow
+          memory = service[:memory_usage] ? "#{service[:memory_usage]} MB" : 'N/A'
+          uptime = service[:uptime] || 'N/A'
+          
+          t.add_row [
+            service[:name],
+            status,
+            enabled,
+            memory,
+            uptime
+          ]
+        end
+        
+        # Add failed services section
+        unless data[:failed_services].empty?
+          t.add_separator
+          t.add_row [{ value: "FAILED SERVICES:", colspan: 5 }]
+          
+          data[:failed_services].each do |failed|
+            t.add_row [
+              "❌ #{failed[:name]}",
+              { value: failed[:description][0..40], colspan: 4 }
+            ]
+          end
+        end
       end
       
       puts table
@@ -177,8 +249,9 @@ module FedoraDashboard
         { key: '3', action: '💾 Detail Disk', command: 'df -h' },
         { key: '4', action: '🔐 Check Security', command: 'sudo journalctl -xe' },
         { key: '5', action: '🌐 Network Details', command: '' },
-        { key: '6', action: '📡 Bandwidth Test', command: '' },
-        { key: '7', action: '📊 Export Report', command: '' },
+        { key: '6', action: '🛠️  Service Details', command: '' },
+        { key: '7', action: '📡 Bandwidth Test', command: '' },
+        { key: '8', action: '📊 Export Report', command: '' },
         { key: 'r', action: '🔄 Refresh', command: '' },
         { key: 'q', action: '🚪 Quit', command: '' }
       ]
@@ -228,6 +301,13 @@ module FedoraDashboard
         f.puts "  Used: #{memory_data[:used_gb]} GB"
         f.puts "  Usage: #{memory_data[:usage_percentage]}%"
         
+        # Disk Data
+        disk_data = @disk.analyze
+        f.puts "\nDISK STATUS:"
+        disk_data[:partitions].each do |partition|
+          f.puts "  #{partition[:mount]}: #{partition[:used_gb]}GB/#{partition[:total_gb]}GB (#{partition[:usage_percentage]}%)"
+        end
+        
         # Network Data
         network_data = @network.analyze
         f.puts "\nNETWORK STATUS:"
@@ -237,11 +317,30 @@ module FedoraDashboard
         end
         f.puts "  Active Connections: #{network_data[:connections][:total]}"
         
+        # Service Data
+        service_data = @services.analyze
+        f.puts "\nSERVICE STATUS:"
+        f.puts "  Critical Services: #{service_data[:critical_services].count { |s| s[:active] }}/#{service_data[:critical_services].size} active"
+        f.puts "  Failed Services: #{service_data[:failed_services].size}"
+        unless service_data[:failed_services].empty?
+          f.puts "  Failed:"
+          service_data[:failed_services].each do |failed|
+            f.puts "    • #{failed[:name]}: #{failed[:description]}"
+          end
+        end
+        
         # Security Data
         security_data = @security.generate_report
         f.puts "\nSECURITY STATUS:"
         f.puts "  Firewall: #{security_data[:firewall][:firewalld][:running] ? 'Active' : 'Inactive'}"
         f.puts "  Security Updates: #{security_data[:updates][:security_updates]}"
+        
+        # Recommendations
+        f.puts "\nRECOMMENDATIONS:"
+        cpu_data[:recommendations].each { |r| f.puts "  • #{r}" }
+        service_data[:recommendations].each { |r| f.puts "  • #{r}" }
+        network_data[:recommendations].each { |r| f.puts "  • #{r}" }
+        security_data[:recommendations].each { |r| f.puts "  • #{r}" }
         
         f.puts "\n" + "=" * 60
         f.puts "Report saved to: #{filename}"
@@ -260,11 +359,14 @@ module FedoraDashboard
         disk_data = @disk.analyze
         security_data = @security.generate_report
         network_data = @network.analyze
+        service_data = @services.analyze
         
         # Display tables
         display_cpu_table(cpu_data)
         display_memory_table(memory_data)
+        display_disk_table(disk_data)
         display_network_table(network_data)
+        display_service_table(service_data)
         display_security_table(security_data)
         
         display_quick_actions
@@ -305,6 +407,38 @@ module FedoraDashboard
           puts "\nTekan enter untuk lanjut..."
           gets
         when '6'
+          puts "🛠️  Service Details:"
+          puts "=" * 50
+          puts "Critical Services Status:"
+          service_data[:critical_services].each do |service|
+            if service[:exists]
+              status = service[:active] ? '✅ Active' : '❌ Inactive'
+              puts "  #{service[:name]}: #{status}"
+              puts "    Enabled: #{service[:enabled] ? 'Yes' : 'No'}"
+              puts "    Memory: #{service[:memory_usage]} MB" if service[:memory_usage]
+              puts "    Uptime: #{service[:uptime]}" if service[:uptime]
+            end
+          end
+          
+          unless service_data[:failed_services].empty?
+            puts "\n❌ Failed Services:"
+            service_data[:failed_services].each do |failed|
+              puts "  #{failed[:name]}: #{failed[:description]}"
+            end
+          end
+          
+          puts "\n📊 Service Statistics:"
+          puts "  Total Services: #{service_data[:service_counts][:total]}"
+          puts "  Active: #{service_data[:service_counts][:active]}"
+          puts "  Inactive: #{service_data[:service_counts][:inactive]}"
+          puts "  Failed: #{service_data[:service_counts][:failed]}"
+          
+          puts "\n💡 Recommendations:"
+          service_data[:recommendations].each { |r| puts "  • #{r}" }
+          
+          puts "\nTekan enter untuk lanjut..."
+          gets
+        when '7'
           puts "📡 Bandwidth Test (2 seconds)..."
           result = @network.realtime_bandwidth('eth0', 2)
           if result
@@ -321,7 +455,7 @@ module FedoraDashboard
           end
           puts "Tekan enter untuk lanjut..."
           gets
-        when '7'
+        when '8'
           export_full_report
           puts "Tekan enter untuk lanjut..."
           gets
